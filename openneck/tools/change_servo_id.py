@@ -4,13 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import sys
 import time
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from _servo_bus import ServoBus, choose_port, confirm_or_exit, validate_servo_id
+from ._servo_bus import ServoBus, choose_port, confirm_or_exit, validate_servo_id
 
 
 def build_parser() -> argparse.ArgumentParser:

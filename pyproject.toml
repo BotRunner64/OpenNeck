@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openneck"
+version = "0.1.0"
+description = "Two-axis OpenNeck active vision gimbal driver and maintenance tools."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.21",
+    "pyserial>=3.5",
+    "pyrealsense2>=2.50",
+    "ftservo-python-sdk==2.0.0",
+]
+
+[project.optional-dependencies]
+pico = [
+    "pico-bridge @ https://github.com/BotRunner64/pico-bridge/releases/download/v0.2.1/pico_bridge-0.2.1-py3-none-any.whl",
+]
+
+[project.scripts]
+openneck = "openneck.cli:main"
+openneck-scan-servos = "openneck.tools.scan_servos:main"
+openneck-change-servo-id = "openneck.tools.change_servo_id:main"
+openneck-calibrate-middle = "openneck.tools.calibrate_servo_middle:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["openneck*"]

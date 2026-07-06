@@ -43,7 +43,7 @@ def load_sdk():
     except ImportError as exc:
         raise SystemExit(
             "Missing scservo_sdk. Install project dependencies first: "
-            "pip install -r requirements.txt"
+            "pip install openneck"
         ) from exc
     return COMM_SUCCESS, PortHandler, sms_sts
 

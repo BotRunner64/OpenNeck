@@ -4,12 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from _servo_bus import ServoBus, choose_port, print_servo_table
+from ._servo_bus import ServoBus, choose_port, print_servo_table
 
 
 def build_parser() -> argparse.ArgumentParser:

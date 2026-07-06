@@ -2,10 +2,10 @@
 """Small active-vision driver, organized like a simple robot CLI.
 
 Typical flow:
-  python simple_active_vision.py ports
-  python simple_active_vision.py calibrate --port /dev/ttyACM0
-  python simple_active_vision.py center
-  python simple_active_vision.py run
+  openneck ports
+  openneck calibrate --port /dev/ttyACM0
+  openneck center
+  openneck run
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 
-CONFIG_PATH = Path(__file__).with_name("active_vision_config.json")
+CONFIG_PATH = Path.cwd() / "active_vision_config.json"
 SERVO_MIN = 0
 SERVO_MAX = 4095
 TORQUE_ENABLE_ADDR = 40
@@ -166,7 +166,7 @@ class Gimbal:
                     "  1. Check the servo power supply voltage and current capacity.\n"
                     "  2. Check ID2/pitch servo wiring, connectors, and common ground.\n"
                     "  3. Move the pitch axis away from the mechanical stop by hand with power off.\n"
-                    "  4. Power-cycle the servo bus, then run: python simple_active_vision.py ports / center.\n"
+                    "  4. Power-cycle the servo bus, then run: openneck ports / center.\n"
                     "Do not bypass this error in software."
                 ) from exc
             raise
@@ -508,7 +508,10 @@ def cmd_run(args) -> None:
     try:
         from pico_bridge import PicoBridge
     except ModuleNotFoundError as exc:
-        raise SystemExit("Missing pico_bridge. Run: pip install -r requirements.txt") from exc
+        raise SystemExit(
+            "Missing pico_bridge. Install optional dependency: "
+            "pip install 'openneck[pico]'"
+        ) from exc
 
     cfg = with_overrides(args)
     camera = Camera(enabled=not args.no_camera)

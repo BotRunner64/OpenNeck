@@ -4,13 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import sys
 import time
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from _servo_bus import (
+from ._servo_bus import (
     MIDDLE_POSITION,
     ServoBus,
     choose_port,
