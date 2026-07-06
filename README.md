@@ -122,6 +122,28 @@ openneck run --port "$OPENNECK_PORT" --pitch-limit 0.25 --no-camera
 openneck run --port "$OPENNECK_PORT" --no-body
 ```
 
+## 程序调用
+
+其他 Python 项目可以直接调用控制器 API：
+
+```python
+from openneck import OpenNeckController
+
+with OpenNeckController(port="/dev/ttyACM0") as neck:
+    neck.center()
+    neck.move_norm(yaw=0.2, pitch=-0.1)
+    print(neck.read_positions())
+```
+
+也可以指定校准配置文件：
+
+```python
+from openneck import OpenNeckController
+
+with OpenNeckController(config="active_vision_config.json") as neck:
+    neck.move_norm(0.0, 0.0)
+```
+
 ## 校准区别
 
 - `openneck-calibrate-middle`：硬件级 2048 中位校准，会写入舵机内部配置。
