@@ -82,8 +82,8 @@ openneck center --port "$OPENNECK_PORT" --axis both --hold-s 2
 9. 小步测试：
 
 ```bash
-openneck test yaw --port "$OPENNECK_PORT" --step 30 --speed 40 --acceleration 60
-openneck test pitch --port "$OPENNECK_PORT" --step 30 --speed 40 --acceleration 60
+openneck test yaw --port "$OPENNECK_PORT" --step 30
+openneck test pitch --port "$OPENNECK_PORT" --step 30
 ```
 
 10. 戴好 PICO，先 dry-run：
@@ -95,7 +95,7 @@ openneck run --port "$OPENNECK_PORT" --dry-run --no-camera
 11. 正式运行先限制幅度：
 
 ```bash
-openneck run --port "$OPENNECK_PORT" --no-camera --yaw-limit 0.25 --pitch-limit 0.25 --speed 40 --acceleration 60
+openneck run --port "$OPENNECK_PORT" --no-camera --yaw-limit 0.25 --pitch-limit 0.25
 ```
 
 稳定后：

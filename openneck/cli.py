@@ -51,8 +51,8 @@ class Config:
     pitch_limit: float = 0.85
     invert_yaw: bool = True
     invert_pitch: bool = True
-    speed: int = 60
-    acceleration: int = 80
+    speed: int = 0
+    acceleration: int = 0
 
     def axis_target(self, axis: str, value: float) -> int:
         value = float(np.clip(value, -1.0, 1.0))
