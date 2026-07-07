@@ -373,7 +373,13 @@ class Camera:
         self.pipeline = None
         if not enabled:
             return
-        import pyrealsense2 as rs
+        try:
+            import pyrealsense2 as rs
+        except ModuleNotFoundError as exc:
+            raise SystemExit(
+                "Missing pyrealsense2. Install optional dependency: "
+                "pip install 'openneck[pico]'"
+            ) from exc
 
         last = None
         for width, height, fps in [(1280, 720, 30), (640, 480, 30), (424, 240, 30)]:
@@ -398,8 +404,10 @@ class Camera:
         return np.asanyarray(color.get_data()) if color else None
 
     def close(self):
-        if self.pipeline is not None:
-            self.pipeline.stop()
+        pipeline = self.pipeline
+        self.pipeline = None
+        if pipeline is not None:
+            pipeline.stop()
 
 
 class VideoThread:
@@ -418,6 +426,8 @@ class VideoThread:
         self.stop.set()
         if self.thread.is_alive():
             self.thread.join(timeout=1.0)
+        if self.thread.is_alive():
+            print("[camera] video thread did not stop within timeout")
 
     def _run(self):
         while not self.stop.is_set():
@@ -428,7 +438,7 @@ class VideoThread:
                     self.frames += 1
             except Exception as exc:
                 print(f"[camera] {exc}")
-                time.sleep(1.0)
+                self.stop.wait(1.0)
 
 
 def cmd_ports(_args) -> None:
@@ -561,65 +571,83 @@ def cmd_run(args) -> None:
     cfg = with_overrides(args)
     camera = Camera(enabled=not args.no_camera)
     video = None
+    pico = None
+    gimbal = None
     mapper = HeadMapper(cfg, use_body=not args.no_body, dead_zone_deg=args.dead_zone)
     smooth = Smooth(alpha=args.smoothing)
 
     try:
-        with Gimbal(cfg) as gimbal, PicoBridge(**({"video": "frames"} if camera.pipeline else {})) as pico:
-            gimbal.center(wait_s=1.0)
-            video = VideoThread(camera, pico)
-            video.start()
+        gimbal = Gimbal(cfg).__enter__()
+        pico = PicoBridge(**({"video": "frames"} if camera.pipeline else {})).__enter__()
 
-            print("[run] look forward; terminal commands: c + Enter recalibrates, q + Enter quits")
-            calibrated = False
-            frames = 0
-            start = time.time()
-            last_status = 0.0
+        gimbal.center(wait_s=1.0)
+        video = VideoThread(camera, pico)
+        video.start()
 
-            while True:
-                if sys.stdin in select_ready():
-                    cmd = sys.stdin.readline().strip().lower()
-                    if cmd == "q":
-                        break
-                    if cmd == "c":
-                        calibrated = False
-                        smooth.reset()
-                        print("[run] recalibrate requested")
+        print("[run] look forward; terminal commands: c + Enter recalibrates, q + Enter quits")
+        calibrated = False
+        frames = 0
+        start = time.time()
+        last_status = 0.0
 
-                try:
-                    frame = pico.wait_frame(timeout=0.1)
-                except TimeoutError:
-                    continue
+        while True:
+            if sys.stdin in select_ready():
+                cmd = sys.stdin.readline().strip().lower()
+                if cmd == "q":
+                    break
+                if cmd == "c":
+                    calibrated = False
+                    smooth.reset()
+                    print("[run] recalibrate requested")
 
-                q_head = np.asarray(frame.head.rotation, dtype=float)
-                q_spine = spine_quat(frame)
-                if not calibrated:
-                    mapper.calibrate(q_head, q_spine)
-                    calibrated = True
-                    continue
+            try:
+                frame = pico.wait_frame(timeout=0.1)
+            except TimeoutError:
+                continue
 
-                yaw, pitch, angles = mapper.target(q_head, q_spine)
-                yaw, pitch = smooth.update(yaw, pitch)
-                targets = {
-                    cfg.yaw_id: cfg.axis_target("yaw", yaw),
-                    cfg.pitch_id: cfg.axis_target("pitch", pitch),
-                }
-                if not args.dry_run:
-                    targets = gimbal.move_norm(yaw, pitch)
-                frames += 1
+            q_head = np.asarray(frame.head.rotation, dtype=float)
+            q_spine = spine_quat(frame)
+            if not calibrated:
+                mapper.calibrate(q_head, q_spine)
+                calibrated = True
+                continue
 
-                now = time.time()
-                if now - last_status > args.status_s:
-                    fps = frames / max(now - start, 1e-6)
-                    print(
-                        f"[run] fps={fps:.1f} yaw={angles[0]:+.1f} pitch={angles[1]:+.1f} "
-                        f"cmd=({yaw:+.3f},{pitch:+.3f}) target={targets} video={video.frames if video else 0}"
-                    )
-                    last_status = now
+            yaw, pitch, angles = mapper.target(q_head, q_spine)
+            yaw, pitch = smooth.update(yaw, pitch)
+            targets = {
+                cfg.yaw_id: cfg.axis_target("yaw", yaw),
+                cfg.pitch_id: cfg.axis_target("pitch", pitch),
+            }
+            if not args.dry_run:
+                targets = gimbal.move_norm(yaw, pitch)
+            frames += 1
+
+            now = time.time()
+            if now - last_status > args.status_s:
+                fps = frames / max(now - start, 1e-6)
+                print(
+                    f"[run] fps={fps:.1f} yaw={angles[0]:+.1f} pitch={angles[1]:+.1f} "
+                    f"cmd=({yaw:+.3f},{pitch:+.3f}) target={targets} video={video.frames if video else 0}"
+                )
+                last_status = now
+    except KeyboardInterrupt:
+        print("\n[run] interrupted")
     finally:
-        if video is not None:
-            video.close()
-        camera.close()
+        cleanup_errors: list[str] = []
+        for name, resource in (
+            ("video thread", video),
+            ("pico bridge", pico),
+            ("camera", camera),
+        ):
+            if resource is None:
+                continue
+            try:
+                resource.close()
+            except Exception as exc:
+                cleanup_errors.append(f"{name}: {exc}")
+        for message in cleanup_errors:
+            print(f"[cleanup] warning: {message}")
+        # Leave servo torque and the serial bus untouched on run exit.
 
 
 def select_ready():
