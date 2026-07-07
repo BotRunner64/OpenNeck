@@ -147,7 +147,7 @@ class Gimbal:
                 raise RuntimeError(f"failed to open port {self.port_name}")
             self.opened = True
             if not self.port.setBaudRate(self.cfg.baudrate):
-                self.close()
+                self.opened = False
                 raise RuntimeError(f"failed to set baudrate {self.cfg.baudrate}")
             print(
                 f"[servo] opening port={self.port_name} baudrate={self.cfg.baudrate} "
@@ -189,7 +189,6 @@ class Gimbal:
     def close(self) -> None:
         if not self.opened:
             return
-        self.port.closePort()
         self.opened = False
         self.connected = False
 
