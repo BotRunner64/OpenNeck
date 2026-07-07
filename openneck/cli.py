@@ -27,6 +27,9 @@ SERVO_MIN = 0
 SERVO_MAX = 4095
 TORQUE_ENABLE_ADDR = 40
 PRESENT_VOLTAGE_ADDR = 62
+CALIBRATION_DISPLAY_PERIOD_S = 0.1
+CALIBRATION_SAMPLE_PERIOD_S = 0.02
+CALIBRATION_MAX_STEP_JUMP = 400
 
 
 @dataclass
@@ -134,6 +137,7 @@ class Gimbal:
         self.port_name = cfg.port or find_servo_port()
         self.port = PortHandler(self.port_name)
         self.packet = sms_sts(self.port)
+        self.opened = False
         self.connected = False
         self.enable_torque_on_connect = enable_torque_on_connect
 
@@ -141,18 +145,23 @@ class Gimbal:
         try:
             if not self.port.openPort():
                 raise RuntimeError(f"failed to open port {self.port_name}")
+            self.opened = True
             if not self.port.setBaudRate(self.cfg.baudrate):
-                self.port.closePort()
+                self.close()
                 raise RuntimeError(f"failed to set baudrate {self.cfg.baudrate}")
+            print(
+                f"[servo] opening port={self.port_name} baudrate={self.cfg.baudrate} "
+                f"ids={self.ids} torque_on_connect={self.enable_torque_on_connect}"
+            )
             for sid in self.ids:
-                _, comm, err = self.packet.ping(sid)
-                self._check(comm, err, f"ping servo {sid}")
+                self.ping(sid)
                 voltage = self.read_voltage(sid)
                 print(f"[servo] id={sid} voltage={voltage:.1f}V")
                 if self.enable_torque_on_connect:
                     self.enable_torque(sid)
         except Exception as exc:
             message = str(exc)
+            self.close()
             if "Permission denied" in message and "/dev/tty" in message:
                 raise SystemExit(
                     f"Cannot open servo port: {message}\n"
@@ -178,10 +187,25 @@ class Gimbal:
         self.close()
 
     def close(self) -> None:
-        if not self.connected:
+        if not self.opened:
             return
         self.port.closePort()
+        self.opened = False
         self.connected = False
+
+    def ping(self, motor_id: int, attempts: int = 3) -> int:
+        last_exc: RuntimeError | None = None
+        for attempt in range(1, attempts + 1):
+            model, comm, err = self.packet.ping(motor_id)
+            try:
+                self._check(comm, err, f"ping servo {motor_id}")
+                return int(model)
+            except RuntimeError as exc:
+                last_exc = exc
+                if attempt < attempts:
+                    time.sleep(0.08)
+        assert last_exc is not None
+        raise last_exc
 
     def read(self) -> dict[int, int]:
         return {sid: self.read_one(sid) for sid in self.ids}
@@ -189,7 +213,10 @@ class Gimbal:
     def read_one(self, motor_id: int) -> int:
         pos, _speed, comm, err = self.packet.ReadPosSpeed(motor_id)
         self._check(comm, err, f"read servo {motor_id}")
-        return int(pos)
+        pos = int(pos)
+        if pos < SERVO_MIN or pos > SERVO_MAX:
+            raise RuntimeError(f"read servo {motor_id}: invalid position {pos}")
+        return pos
 
     def read_voltage(self, motor_id: int) -> float:
         voltage_raw, comm, err = self.packet.read1ByteTxRx(motor_id, PRESENT_VOLTAGE_ADDR)
@@ -429,7 +456,7 @@ def cmd_voltage(args) -> None:
 
 def cmd_calibrate(args) -> None:
     cfg = with_overrides(args)
-    with Gimbal(cfg) as gimbal:
+    with Gimbal(cfg, enable_torque_on_connect=False) as gimbal:
         gimbal.release()
         print("\n[1/3] Move the camera to physical forward center.")
         input("Press Enter when aligned...")
@@ -454,20 +481,38 @@ def record_axis_limits(gimbal: Gimbal, motor_id: int, name: str) -> tuple[int, i
     print("Sampling position while you move...")
 
     samples: list[int] = []
-    start = time.time()
+    rejected = 0
+    last_display = 0.0
     while True:
-        samples.append(gimbal.read_one(motor_id))
+        try:
+            pos = gimbal.read_one(motor_id)
+        except RuntimeError:
+            rejected += 1
+            pos = None
+        if pos is not None:
+            if samples and abs(pos - samples[-1]) > CALIBRATION_MAX_STEP_JUMP:
+                rejected += 1
+            else:
+                samples.append(pos)
         if sys.stdin in select_ready():
             sys.stdin.readline()
             break
-        if time.time() - start > 0.5:
-            print(f"  {name}: current={samples[-1]} min={min(samples)} max={max(samples)}", end="\r")
-            start = time.time()
-        time.sleep(0.03)
+        now = time.time()
+        if samples and now - last_display > CALIBRATION_DISPLAY_PERIOD_S:
+            print(
+                f"  {name}: current={samples[-1]} min={min(samples)} "
+                f"max={max(samples)} rejected={rejected}",
+                end="\r",
+                flush=True,
+            )
+            last_display = now
+        time.sleep(CALIBRATION_SAMPLE_PERIOD_S)
     print()
 
+    if not samples:
+        raise RuntimeError(f"No valid {name} samples captured.")
     low, high = min(samples), max(samples)
-    print(f"[calibrate] {name}_min={low} {name}_max={high}")
+    print(f"[calibrate] {name}_min={low} {name}_max={high} rejected={rejected}")
     return int(low), int(high)
 
 
