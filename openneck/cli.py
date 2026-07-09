@@ -546,11 +546,8 @@ def cmd_center(args) -> None:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
             gimbal.center_axis(args.axis, wait_s=0.5)
-            print("[center] press q + Enter to stop")
             deadline = time.time() + args.hold_s
             while time.time() < deadline:
-                if sys.stdin in select_ready() and sys.stdin.readline().strip().lower() == "q":
-                    break
                 print(f"[servo] monitor readback={gimbal.read()}")
                 time.sleep(0.2)
         finally:
