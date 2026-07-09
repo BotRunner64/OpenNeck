@@ -12,6 +12,7 @@ TORQUE_ENABLE_ADDR = 40
 PRESENT_VOLTAGE_ADDR = 62
 MIDDLE_POSITION = 2048
 CALIBRATE_MIDDLE_CMD = 128
+SERIAL_WRITE_TIMEOUT_S = 0.5
 
 
 def available_ports() -> list[str]:
@@ -60,11 +61,11 @@ class ServoBus:
         self.opened = False
 
     def __enter__(self) -> "ServoBus":
+        self.port.baudrate = self.baudrate
         if not self.port.openPort():
             raise RuntimeError(f"failed to open port {self.port_name}")
         self.opened = True
-        if not self.port.setBaudRate(self.baudrate):
-            raise RuntimeError(f"failed to set baudrate {self.baudrate}")
+        self._configure_serial()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -73,12 +74,31 @@ class ServoBus:
     def close(self) -> None:
         if not self.opened:
             return
+        ser = getattr(self.port, "ser", None)
         try:
-            if hasattr(self.port, "clearPort"):
-                self.port.clearPort()
+            if ser is not None and hasattr(ser, "cancel_write"):
+                ser.cancel_write()
+            if ser is not None:
+                for method_name in ("reset_output_buffer", "reset_input_buffer"):
+                    try:
+                        getattr(ser, method_name)()
+                    except Exception:
+                        pass
             self.port.closePort()
         finally:
             self.opened = False
+
+    def _configure_serial(self) -> None:
+        ser = getattr(self.port, "ser", None)
+        if ser is None:
+            return
+        ser.write_timeout = SERIAL_WRITE_TIMEOUT_S
+        ser.timeout = 0
+        try:
+            ser.reset_output_buffer()
+            ser.reset_input_buffer()
+        except Exception:
+            pass
 
     def check(self, comm: int, err: int, action: str) -> None:
         if comm != self.comm_success:

@@ -30,6 +30,7 @@ PRESENT_VOLTAGE_ADDR = 62
 CALIBRATION_DISPLAY_PERIOD_S = 0.1
 CALIBRATION_SAMPLE_PERIOD_S = 0.02
 CALIBRATION_MAX_STEP_JUMP = 400
+SERIAL_WRITE_TIMEOUT_S = 0.5
 
 
 @dataclass
@@ -143,11 +144,11 @@ class Gimbal:
 
     def __enter__(self):
         try:
+            self.port.baudrate = self.cfg.baudrate
             if not self.port.openPort():
                 raise RuntimeError(f"failed to open port {self.port_name}")
             self.opened = True
-            if not self.port.setBaudRate(self.cfg.baudrate):
-                raise RuntimeError(f"failed to set baudrate {self.cfg.baudrate}")
+            self._configure_serial()
             print(
                 f"[servo] opening port={self.port_name} baudrate={self.cfg.baudrate} "
                 f"ids={self.ids} torque_on_connect={self.enable_torque_on_connect}"
@@ -190,13 +191,32 @@ class Gimbal:
     def close(self) -> None:
         if not self.opened:
             return
+        ser = getattr(self.port, "ser", None)
         try:
-            if hasattr(self.port, "clearPort"):
-                self.port.clearPort()
+            if ser is not None and hasattr(ser, "cancel_write"):
+                ser.cancel_write()
+            if ser is not None:
+                for method_name in ("reset_output_buffer", "reset_input_buffer"):
+                    try:
+                        getattr(ser, method_name)()
+                    except Exception:
+                        pass
             self.port.closePort()
         finally:
             self.opened = False
             self.connected = False
+
+    def _configure_serial(self) -> None:
+        ser = getattr(self.port, "ser", None)
+        if ser is None:
+            return
+        ser.write_timeout = SERIAL_WRITE_TIMEOUT_S
+        ser.timeout = 0
+        try:
+            ser.reset_output_buffer()
+            ser.reset_input_buffer()
+        except Exception:
+            pass
 
     def ping(self, motor_id: int, attempts: int = 3) -> int:
         last_exc: RuntimeError | None = None
