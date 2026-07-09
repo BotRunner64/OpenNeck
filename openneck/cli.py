@@ -28,6 +28,7 @@ SERVO_MIN = 0
 SERVO_MAX = 4095
 TORQUE_ENABLE_ADDR = 40
 PRESENT_VOLTAGE_ADDR = 62
+INST_PING = 1
 CALIBRATION_DISPLAY_PERIOD_S = 0.1
 CALIBRATION_SAMPLE_PERIOD_S = 0.02
 CALIBRATION_MAX_STEP_JUMP = 400
@@ -258,6 +259,53 @@ class Gimbal:
             ser.reset_input_buffer()
         except Exception:
             pass
+
+    @staticmethod
+    def _hex_bytes(data: bytes) -> str:
+        if not data:
+            return "<none>"
+        return " ".join(f"{byte:02x}" for byte in data)
+
+    @staticmethod
+    def _raw_ping_packet(motor_id: int) -> bytes:
+        packet = [0xFF, 0xFF, motor_id, 0x02, INST_PING, 0x00]
+        packet[-1] = (~sum(packet[2:-1]) & 0xFF) & 0xFF
+        return bytes(packet)
+
+    def raw_ping(self, motor_id: int, response_window_s: float = 0.25) -> bytes:
+        ser = getattr(self.port, "ser", None)
+        if ser is None:
+            raise RuntimeError("serial port is not open")
+        self._reset_serial_buffers()
+        packet = self._raw_ping_packet(motor_id)
+        written = ser.write(packet)
+        if written != len(packet):
+            raise RuntimeError(f"short write id={motor_id}: wrote {written}/{len(packet)}")
+        deadline = time.monotonic() + response_window_s
+        data = bytearray()
+        while time.monotonic() < deadline:
+            waiting = ser.in_waiting
+            if waiting:
+                data.extend(ser.read(waiting))
+            else:
+                time.sleep(0.005)
+        waiting = ser.in_waiting
+        if waiting:
+            data.extend(ser.read(waiting))
+        return bytes(data)
+
+    def diagnose_open_bus(self, label: str) -> None:
+        print(f"[diagnose] {label}: raw ping while serial port is still open")
+        for sid in self.ids:
+            try:
+                rx = self.raw_ping(sid)
+                print(f"[diagnose] id={sid} raw_rx={self._hex_bytes(rx)}")
+            except Exception as exc:
+                print(f"[diagnose] id={sid} raw_ping_error={exc}")
+        try:
+            print(f"[diagnose] sdk_read={self.read()}")
+        except Exception as exc:
+            print(f"[diagnose] sdk_read_error={exc}")
 
     def ping(self, motor_id: int, attempts: int = SERVO_PING_ATTEMPTS) -> int:
         last_exc: RuntimeError | None = None
@@ -610,8 +658,12 @@ def cmd_center(args) -> None:
     cfg = with_overrides(args)
     try:
         with Gimbal(cfg) as gimbal:
-            gimbal.center_axis(args.axis, wait_s=0.5)
-            gimbal.monitor(args.hold_s)
+            try:
+                gimbal.center_axis(args.axis, wait_s=0.5)
+                gimbal.monitor(args.hold_s)
+            except KeyboardInterrupt:
+                print("\n[center] interrupted")
+                gimbal.diagnose_open_bus("after interrupt")
     except KeyboardInterrupt:
         print("\n[center] interrupted")
 
