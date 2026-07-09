@@ -706,6 +706,9 @@ def cmd_center(args) -> None:
             except KeyboardInterrupt:
                 print("\n[center] interrupted")
                 gimbal.diagnose_open_bus("after interrupt")
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os._exit(130)
     except KeyboardInterrupt:
         print("\n[center] interrupted")
 
