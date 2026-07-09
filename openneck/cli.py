@@ -553,9 +553,15 @@ def cmd_center(args) -> None:
         try:
             gimbal.center_axis(args.axis, wait_s=0.5)
             deadline = time.time() + args.hold_s
-            while time.time() < deadline and not interrupted:
+            while time.time() < deadline:
                 print(f"[servo] monitor readback={gimbal.read()}")
+                if interrupted:
+                    break
                 time.sleep(0.2)
+            if interrupted:
+                while time.time() < deadline:
+                    gimbal.read()
+                    time.sleep(0.2)
         finally:
             signal.signal(signal.SIGINT, old_handler)
 
