@@ -11,6 +11,7 @@ Typical flow:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import math
 import os
@@ -238,8 +239,20 @@ class Gimbal:
         ser.write_timeout = SERIAL_WRITE_TIMEOUT_S
         ser.timeout = 0
         ser.inter_byte_timeout = SERIAL_WRITE_TIMEOUT_S
+        self._set_fd_nonblocking()
         self._disable_hangup_on_close()
         self._reset_serial_buffers()
+
+    def _set_fd_nonblocking(self) -> None:
+        ser = getattr(self.port, "ser", None)
+        if ser is None:
+            return
+        try:
+            fd = ser.fileno()
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        except Exception:
+            pass
 
     def _disable_hangup_on_close(self) -> None:
         ser = getattr(self.port, "ser", None)
@@ -280,9 +293,22 @@ class Gimbal:
             raise RuntimeError("serial port is not open")
         packet = self._raw_ping_packet(motor_id)
         fd = ser.fileno()
-        written = os.write(fd, packet)
+        self._set_fd_nonblocking()
+        written = 0
+        write_deadline = time.monotonic() + response_window_s
+        while written < len(packet) and time.monotonic() < write_deadline:
+            timeout = max(0.0, write_deadline - time.monotonic())
+            _, ready, _ = select.select([], [fd], [], min(timeout, 0.02))
+            if not ready:
+                continue
+            try:
+                written += os.write(fd, packet[written:])
+            except BlockingIOError:
+                continue
         if written != len(packet):
-            raise RuntimeError(f"short write id={motor_id}: wrote {written}/{len(packet)}")
+            raise RuntimeError(
+                f"raw write timeout id={motor_id}: wrote {written}/{len(packet)}"
+            )
         deadline = time.monotonic() + response_window_s
         data = bytearray()
         while time.monotonic() < deadline:
