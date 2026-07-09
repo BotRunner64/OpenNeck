@@ -147,7 +147,6 @@ class Gimbal:
                 raise RuntimeError(f"failed to open port {self.port_name}")
             self.opened = True
             if not self.port.setBaudRate(self.cfg.baudrate):
-                self.opened = False
                 raise RuntimeError(f"failed to set baudrate {self.cfg.baudrate}")
             print(
                 f"[servo] opening port={self.port_name} baudrate={self.cfg.baudrate} "
@@ -159,9 +158,11 @@ class Gimbal:
                 print(f"[servo] id={sid} voltage={voltage:.1f}V")
                 if self.enable_torque_on_connect:
                     self.enable_torque(sid)
-        except Exception as exc:
-            message = str(exc)
+        except BaseException as exc:
             self.close()
+            if not isinstance(exc, Exception):
+                raise
+            message = str(exc)
             if "Permission denied" in message and "/dev/tty" in message:
                 raise SystemExit(
                     f"Cannot open servo port: {message}\n"
@@ -189,8 +190,13 @@ class Gimbal:
     def close(self) -> None:
         if not self.opened:
             return
-        self.opened = False
-        self.connected = False
+        try:
+            if hasattr(self.port, "clearPort"):
+                self.port.clearPort()
+            self.port.closePort()
+        finally:
+            self.opened = False
+            self.connected = False
 
     def ping(self, motor_id: int, attempts: int = 3) -> int:
         last_exc: RuntimeError | None = None
@@ -540,9 +546,12 @@ def validate_axis(name: str, low: int, center: int, high: int) -> None:
 
 def cmd_center(args) -> None:
     cfg = with_overrides(args)
-    with Gimbal(cfg) as gimbal:
-        gimbal.center_axis(args.axis, wait_s=0.5)
-        gimbal.monitor(args.hold_s)
+    try:
+        with Gimbal(cfg) as gimbal:
+            gimbal.center_axis(args.axis, wait_s=0.5)
+            gimbal.monitor(args.hold_s)
+    except KeyboardInterrupt:
+        print("\n[center] interrupted")
 
 
 def cmd_test(args) -> None:

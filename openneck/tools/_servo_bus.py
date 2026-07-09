@@ -64,12 +64,20 @@ class ServoBus:
             raise RuntimeError(f"failed to open port {self.port_name}")
         self.opened = True
         if not self.port.setBaudRate(self.baudrate):
-            self.opened = False
             raise RuntimeError(f"failed to set baudrate {self.baudrate}")
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if self.opened:
+        self.close()
+
+    def close(self) -> None:
+        if not self.opened:
+            return
+        try:
+            if hasattr(self.port, "clearPort"):
+                self.port.clearPort()
+            self.port.closePort()
+        finally:
             self.opened = False
 
     def check(self, comm: int, err: int, action: str) -> None:
