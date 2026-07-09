@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import select
 import sys
 import termios
 import threading
@@ -276,36 +278,50 @@ class Gimbal:
         ser = getattr(self.port, "ser", None)
         if ser is None:
             raise RuntimeError("serial port is not open")
-        self._reset_serial_buffers()
         packet = self._raw_ping_packet(motor_id)
-        written = ser.write(packet)
+        fd = ser.fileno()
+        written = os.write(fd, packet)
         if written != len(packet):
             raise RuntimeError(f"short write id={motor_id}: wrote {written}/{len(packet)}")
         deadline = time.monotonic() + response_window_s
         data = bytearray()
         while time.monotonic() < deadline:
-            waiting = ser.in_waiting
-            if waiting:
-                data.extend(ser.read(waiting))
-            else:
-                time.sleep(0.005)
-        waiting = ser.in_waiting
-        if waiting:
-            data.extend(ser.read(waiting))
+            timeout = max(0.0, deadline - time.monotonic())
+            ready, _, _ = select.select([fd], [], [], min(timeout, 0.02))
+            if not ready:
+                continue
+            try:
+                chunk = os.read(fd, 256)
+            except BlockingIOError:
+                continue
+            if chunk:
+                data.extend(chunk)
         return bytes(data)
 
     def diagnose_open_bus(self, label: str) -> None:
-        print(f"[diagnose] {label}: raw ping while serial port is still open")
+        ser = getattr(self.port, "ser", None)
+        state = ""
+        if ser is not None:
+            try:
+                state = (
+                    f" dtr={ser.dtr} rts={ser.rts} "
+                    f"in_waiting={ser.in_waiting} out_waiting={ser.out_waiting}"
+                )
+            except Exception as exc:
+                state = f" state_error={exc}"
+        print(f"[diagnose] {label}: raw ping while serial port is still open{state}", flush=True)
         for sid in self.ids:
             try:
+                print(f"[diagnose] id={sid} raw_ping_start", flush=True)
                 rx = self.raw_ping(sid)
-                print(f"[diagnose] id={sid} raw_rx={self._hex_bytes(rx)}")
+                print(f"[diagnose] id={sid} raw_rx={self._hex_bytes(rx)}", flush=True)
             except Exception as exc:
-                print(f"[diagnose] id={sid} raw_ping_error={exc}")
+                print(f"[diagnose] id={sid} raw_ping_error={exc}", flush=True)
         try:
-            print(f"[diagnose] sdk_read={self.read()}")
+            print("[diagnose] sdk_read_start", flush=True)
+            print(f"[diagnose] sdk_read={self.read()}", flush=True)
         except Exception as exc:
-            print(f"[diagnose] sdk_read_error={exc}")
+            print(f"[diagnose] sdk_read_error={exc}", flush=True)
 
     def ping(self, motor_id: int, attempts: int = SERVO_PING_ATTEMPTS) -> int:
         last_exc: RuntimeError | None = None
