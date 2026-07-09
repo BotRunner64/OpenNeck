@@ -542,31 +542,19 @@ def validate_axis(name: str, low: int, center: int, high: int) -> None:
 def cmd_center(args) -> None:
     cfg = with_overrides(args)
     with Gimbal(cfg) as gimbal:
-        interrupted = False
-
-        def handle_sigint(_signum, _frame):
-            nonlocal interrupted
-            interrupted = True
-
         old_handler = signal.getsignal(signal.SIGINT)
-        signal.signal(signal.SIGINT, handle_sigint)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
             gimbal.center_axis(args.axis, wait_s=0.5)
+            print("[center] press q + Enter to stop")
             deadline = time.time() + args.hold_s
             while time.time() < deadline:
-                print(f"[servo] monitor readback={gimbal.read()}")
-                if interrupted:
+                if sys.stdin in select_ready() and sys.stdin.readline().strip().lower() == "q":
                     break
+                print(f"[servo] monitor readback={gimbal.read()}")
                 time.sleep(0.2)
-            if interrupted:
-                while time.time() < deadline:
-                    gimbal.read()
-                    time.sleep(0.2)
         finally:
             signal.signal(signal.SIGINT, old_handler)
-
-        if interrupted:
-            print("\n[center] interrupted")
 
 
 def cmd_test(args) -> None:
