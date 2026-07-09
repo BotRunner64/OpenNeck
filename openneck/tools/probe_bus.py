@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import termios
 import time
 
 import serial
@@ -52,6 +53,22 @@ def apply_control_lines(ser: serial.Serial, dtr: bool | None, rts: bool | None) 
     if rts is not None:
         ser.rts = rts
     time.sleep(0.1)
+
+
+def disable_hangup_on_close(ser: serial.Serial) -> None:
+    try:
+        attrs = termios.tcgetattr(ser.fileno())
+        attrs[2] &= ~termios.HUPCL
+        termios.tcsetattr(ser.fileno(), termios.TCSANOW, attrs)
+    except Exception:
+        pass
+
+
+def hangup_on_close_enabled(ser: serial.Serial) -> bool | None:
+    try:
+        return bool(termios.tcgetattr(ser.fileno())[2] & termios.HUPCL)
+    except Exception:
+        return None
 
 
 def probe_once(
@@ -108,9 +125,10 @@ def main() -> None:
         write_timeout=0.5,
         inter_byte_timeout=0.5,
     ) as ser:
+        disable_hangup_on_close(ser)
         print(
             f"[probe] port={port} baudrate={args.baudrate} "
-            f"dtr={ser.dtr} rts={ser.rts}"
+            f"dtr={ser.dtr} rts={ser.rts} hupcl={hangup_on_close_enabled(ser)}"
         )
         time.sleep(0.25)
         for label, dtr, rts in control_line_states(args.sweep_control_lines):

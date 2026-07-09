@@ -14,6 +14,7 @@ import argparse
 import json
 import math
 import sys
+import termios
 import threading
 import time
 from dataclasses import dataclass, asdict
@@ -222,11 +223,6 @@ class Gimbal:
                 ser.cancel_write()
             if ser is not None:
                 self._reset_serial_buffers()
-                for method_name, value in (("setDTR", False), ("setRTS", False)):
-                    try:
-                        getattr(ser, method_name)(value)
-                    except Exception:
-                        pass
             self.port.closePort()
         finally:
             self.opened = False
@@ -239,7 +235,19 @@ class Gimbal:
         ser.write_timeout = SERIAL_WRITE_TIMEOUT_S
         ser.timeout = 0
         ser.inter_byte_timeout = SERIAL_WRITE_TIMEOUT_S
+        self._disable_hangup_on_close()
         self._reset_serial_buffers()
+
+    def _disable_hangup_on_close(self) -> None:
+        ser = getattr(self.port, "ser", None)
+        if ser is None:
+            return
+        try:
+            attrs = termios.tcgetattr(ser.fileno())
+            attrs[2] &= ~termios.HUPCL
+            termios.tcsetattr(ser.fileno(), termios.TCSANOW, attrs)
+        except Exception:
+            pass
 
     def _reset_serial_buffers(self) -> None:
         ser = getattr(self.port, "ser", None)

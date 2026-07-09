@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import time
+import termios
 from dataclasses import dataclass
 
 
@@ -84,11 +85,6 @@ class ServoBus:
                 ser.cancel_write()
             if ser is not None:
                 self._reset_serial_buffers()
-                for method_name, value in (("setDTR", False), ("setRTS", False)):
-                    try:
-                        getattr(ser, method_name)(value)
-                    except Exception:
-                        pass
             self.port.closePort()
         finally:
             self.opened = False
@@ -100,7 +96,19 @@ class ServoBus:
         ser.write_timeout = SERIAL_WRITE_TIMEOUT_S
         ser.timeout = 0
         ser.inter_byte_timeout = SERIAL_WRITE_TIMEOUT_S
+        self._disable_hangup_on_close()
         self._reset_serial_buffers()
+
+    def _disable_hangup_on_close(self) -> None:
+        ser = getattr(self.port, "ser", None)
+        if ser is None:
+            return
+        try:
+            attrs = termios.tcgetattr(ser.fileno())
+            attrs[2] &= ~termios.HUPCL
+            termios.tcsetattr(ser.fileno(), termios.TCSANOW, attrs)
+        except Exception:
+            pass
 
     def _reset_serial_buffers(self) -> None:
         ser = getattr(self.port, "ser", None)
