@@ -40,6 +40,7 @@ SERIAL_OPEN_SETTLE_S = 0.25
 SERIAL_RECOVERY_SETTLE_S = 0.8
 SERIAL_CONNECT_ATTEMPTS = 3
 SERVO_PING_ATTEMPTS = 5
+SERIAL_INTERRUPT_EXIT_SETTLE_S = 1.5
 
 
 @dataclass
@@ -706,6 +707,11 @@ def cmd_center(args) -> None:
             except KeyboardInterrupt:
                 print("\n[center] interrupted")
                 gimbal.diagnose_open_bus("after interrupt")
+                print(
+                    f"[center] keeping serial port open for "
+                    f"{SERIAL_INTERRUPT_EXIT_SETTLE_S:.1f}s before exit"
+                )
+                time.sleep(SERIAL_INTERRUPT_EXIT_SETTLE_S)
                 sys.stdout.flush()
                 sys.stderr.flush()
                 os._exit(130)
