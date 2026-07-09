@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 
@@ -13,6 +14,7 @@ PRESENT_VOLTAGE_ADDR = 62
 MIDDLE_POSITION = 2048
 CALIBRATE_MIDDLE_CMD = 128
 SERIAL_WRITE_TIMEOUT_S = 0.5
+SERIAL_OPEN_SETTLE_S = 0.25
 
 
 def available_ports() -> list[str]:
@@ -66,6 +68,8 @@ class ServoBus:
             raise RuntimeError(f"failed to open port {self.port_name}")
         self.opened = True
         self._configure_serial()
+        time.sleep(SERIAL_OPEN_SETTLE_S)
+        self._reset_serial_buffers()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -79,9 +83,10 @@ class ServoBus:
             if ser is not None and hasattr(ser, "cancel_write"):
                 ser.cancel_write()
             if ser is not None:
-                for method_name in ("reset_output_buffer", "reset_input_buffer"):
+                self._reset_serial_buffers()
+                for method_name, value in (("setDTR", False), ("setRTS", False)):
                     try:
-                        getattr(ser, method_name)()
+                        getattr(ser, method_name)(value)
                     except Exception:
                         pass
             self.port.closePort()
@@ -94,6 +99,13 @@ class ServoBus:
             return
         ser.write_timeout = SERIAL_WRITE_TIMEOUT_S
         ser.timeout = 0
+        ser.inter_byte_timeout = SERIAL_WRITE_TIMEOUT_S
+        self._reset_serial_buffers()
+
+    def _reset_serial_buffers(self) -> None:
+        ser = getattr(self.port, "ser", None)
+        if ser is None:
+            return
         try:
             ser.reset_output_buffer()
             ser.reset_input_buffer()

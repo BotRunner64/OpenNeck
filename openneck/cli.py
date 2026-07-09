@@ -31,6 +31,10 @@ CALIBRATION_DISPLAY_PERIOD_S = 0.1
 CALIBRATION_SAMPLE_PERIOD_S = 0.02
 CALIBRATION_MAX_STEP_JUMP = 400
 SERIAL_WRITE_TIMEOUT_S = 0.5
+SERIAL_OPEN_SETTLE_S = 0.25
+SERIAL_RECOVERY_SETTLE_S = 0.8
+SERIAL_CONNECT_ATTEMPTS = 3
+SERVO_PING_ATTEMPTS = 5
 
 
 @dataclass
@@ -144,21 +148,33 @@ class Gimbal:
 
     def __enter__(self):
         try:
-            self.port.baudrate = self.cfg.baudrate
-            if not self.port.openPort():
-                raise RuntimeError(f"failed to open port {self.port_name}")
-            self.opened = True
-            self._configure_serial()
-            print(
-                f"[servo] opening port={self.port_name} baudrate={self.cfg.baudrate} "
-                f"ids={self.ids} torque_on_connect={self.enable_torque_on_connect}"
-            )
-            for sid in self.ids:
-                self.ping(sid)
-                voltage = self.read_voltage(sid)
-                print(f"[servo] id={sid} voltage={voltage:.1f}V")
-                if self.enable_torque_on_connect:
-                    self.enable_torque(sid)
+            for attempt in range(1, SERIAL_CONNECT_ATTEMPTS + 1):
+                try:
+                    self._open_port()
+                    print(
+                        f"[servo] opening port={self.port_name} baudrate={self.cfg.baudrate} "
+                        f"ids={self.ids} torque_on_connect={self.enable_torque_on_connect}"
+                    )
+                    for sid in self.ids:
+                        self.ping(sid)
+                        voltage = self.read_voltage(sid)
+                        print(f"[servo] id={sid} voltage={voltage:.1f}V")
+                        if self.enable_torque_on_connect:
+                            self.enable_torque(sid)
+                    break
+                except BaseException as exc:
+                    self.close()
+                    if not isinstance(exc, Exception):
+                        raise
+                    if "Permission denied" in str(exc) or "Input voltage error" in str(exc):
+                        raise
+                    if attempt >= SERIAL_CONNECT_ATTEMPTS:
+                        raise
+                    print(
+                        f"[servo] connect attempt {attempt} failed: {exc}; "
+                        "resetting serial port and retrying"
+                    )
+                    time.sleep(SERIAL_RECOVERY_SETTLE_S)
         except BaseException as exc:
             self.close()
             if not isinstance(exc, Exception):
@@ -188,6 +204,15 @@ class Gimbal:
     def __exit__(self, exc_type, exc, tb):
         self.close()
 
+    def _open_port(self) -> None:
+        self.port.baudrate = self.cfg.baudrate
+        if not self.port.openPort():
+            raise RuntimeError(f"failed to open port {self.port_name}")
+        self.opened = True
+        self._configure_serial()
+        time.sleep(SERIAL_OPEN_SETTLE_S)
+        self._reset_serial_buffers()
+
     def close(self) -> None:
         if not self.opened:
             return
@@ -196,9 +221,10 @@ class Gimbal:
             if ser is not None and hasattr(ser, "cancel_write"):
                 ser.cancel_write()
             if ser is not None:
-                for method_name in ("reset_output_buffer", "reset_input_buffer"):
+                self._reset_serial_buffers()
+                for method_name, value in (("setDTR", False), ("setRTS", False)):
                     try:
-                        getattr(ser, method_name)()
+                        getattr(ser, method_name)(value)
                     except Exception:
                         pass
             self.port.closePort()
@@ -212,13 +238,20 @@ class Gimbal:
             return
         ser.write_timeout = SERIAL_WRITE_TIMEOUT_S
         ser.timeout = 0
+        ser.inter_byte_timeout = SERIAL_WRITE_TIMEOUT_S
+        self._reset_serial_buffers()
+
+    def _reset_serial_buffers(self) -> None:
+        ser = getattr(self.port, "ser", None)
+        if ser is None:
+            return
         try:
             ser.reset_output_buffer()
             ser.reset_input_buffer()
         except Exception:
             pass
 
-    def ping(self, motor_id: int, attempts: int = 3) -> int:
+    def ping(self, motor_id: int, attempts: int = SERVO_PING_ATTEMPTS) -> int:
         last_exc: RuntimeError | None = None
         for attempt in range(1, attempts + 1):
             model, comm, err = self.packet.ping(motor_id)
@@ -228,7 +261,8 @@ class Gimbal:
             except RuntimeError as exc:
                 last_exc = exc
                 if attempt < attempts:
-                    time.sleep(0.08)
+                    self._reset_serial_buffers()
+                    time.sleep(0.12)
         assert last_exc is not None
         raise last_exc
 
