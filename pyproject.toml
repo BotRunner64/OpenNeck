@@ -25,7 +25,6 @@ openneck = "openneck.cli:main"
 openneck-scan-servos = "openneck.tools.scan_servos:main"
 openneck-change-servo-id = "openneck.tools.change_servo_id:main"
 openneck-calibrate-middle = "openneck.tools.calibrate_servo_middle:main"
-openneck-probe-bus = "openneck.tools.probe_bus:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

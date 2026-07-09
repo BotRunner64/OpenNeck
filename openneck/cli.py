@@ -11,13 +11,10 @@ Typical flow:
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import math
-import os
-import select
+import signal
 import sys
-import termios
 import threading
 import time
 from dataclasses import dataclass, asdict
@@ -31,16 +28,9 @@ SERVO_MIN = 0
 SERVO_MAX = 4095
 TORQUE_ENABLE_ADDR = 40
 PRESENT_VOLTAGE_ADDR = 62
-INST_PING = 1
 CALIBRATION_DISPLAY_PERIOD_S = 0.1
 CALIBRATION_SAMPLE_PERIOD_S = 0.02
 CALIBRATION_MAX_STEP_JUMP = 400
-SERIAL_WRITE_TIMEOUT_S = 0.5
-SERIAL_OPEN_SETTLE_S = 0.25
-SERIAL_RECOVERY_SETTLE_S = 0.8
-SERIAL_CONNECT_ATTEMPTS = 3
-SERVO_PING_ATTEMPTS = 5
-SERIAL_INTERRUPT_EXIT_SETTLE_S = 1.5
 
 
 @dataclass
@@ -154,38 +144,25 @@ class Gimbal:
 
     def __enter__(self):
         try:
-            for attempt in range(1, SERIAL_CONNECT_ATTEMPTS + 1):
-                try:
-                    self._open_port()
-                    print(
-                        f"[servo] opening port={self.port_name} baudrate={self.cfg.baudrate} "
-                        f"ids={self.ids} torque_on_connect={self.enable_torque_on_connect}"
-                    )
-                    for sid in self.ids:
-                        self.ping(sid)
-                        voltage = self.read_voltage(sid)
-                        print(f"[servo] id={sid} voltage={voltage:.1f}V")
-                        if self.enable_torque_on_connect:
-                            self.enable_torque(sid)
-                    break
-                except BaseException as exc:
-                    self.close()
-                    if not isinstance(exc, Exception):
-                        raise
-                    if "Permission denied" in str(exc) or "Input voltage error" in str(exc):
-                        raise
-                    if attempt >= SERIAL_CONNECT_ATTEMPTS:
-                        raise
-                    print(
-                        f"[servo] connect attempt {attempt} failed: {exc}; "
-                        "resetting serial port and retrying"
-                    )
-                    time.sleep(SERIAL_RECOVERY_SETTLE_S)
-        except BaseException as exc:
-            self.close()
-            if not isinstance(exc, Exception):
-                raise
+            if not self.port.openPort():
+                raise RuntimeError(f"failed to open port {self.port_name}")
+            self.opened = True
+            if not self.port.setBaudRate(self.cfg.baudrate):
+                self.opened = False
+                raise RuntimeError(f"failed to set baudrate {self.cfg.baudrate}")
+            print(
+                f"[servo] opening port={self.port_name} baudrate={self.cfg.baudrate} "
+                f"ids={self.ids} torque_on_connect={self.enable_torque_on_connect}"
+            )
+            for sid in self.ids:
+                self.ping(sid)
+                voltage = self.read_voltage(sid)
+                print(f"[servo] id={sid} voltage={voltage:.1f}V")
+                if self.enable_torque_on_connect:
+                    self.enable_torque(sid)
+        except Exception as exc:
             message = str(exc)
+            self.close()
             if "Permission denied" in message and "/dev/tty" in message:
                 raise SystemExit(
                     f"Cannot open servo port: {message}\n"
@@ -210,169 +187,23 @@ class Gimbal:
     def __exit__(self, exc_type, exc, tb):
         self.close()
 
-    def _open_port(self) -> None:
-        self.port.baudrate = self.cfg.baudrate
-        if not self.port.openPort():
-            raise RuntimeError(f"failed to open port {self.port_name}")
-        self.opened = True
-        self._configure_serial()
-        time.sleep(SERIAL_OPEN_SETTLE_S)
-        self._reset_serial_buffers()
-
     def close(self) -> None:
         if not self.opened:
             return
-        ser = getattr(self.port, "ser", None)
-        try:
-            if ser is not None and hasattr(ser, "cancel_write"):
-                ser.cancel_write()
-            if ser is not None:
-                self._reset_serial_buffers()
-            self.port.closePort()
-        finally:
-            self._reset_sdk_busy()
-            self.opened = False
-            self.connected = False
+        self.opened = False
+        self.connected = False
 
-    def _reset_sdk_busy(self) -> None:
-        try:
-            self.port.is_using = False
-        except Exception:
-            pass
-
-    def _configure_serial(self) -> None:
-        ser = getattr(self.port, "ser", None)
-        if ser is None:
-            return
-        ser.write_timeout = SERIAL_WRITE_TIMEOUT_S
-        ser.timeout = 0
-        ser.inter_byte_timeout = SERIAL_WRITE_TIMEOUT_S
-        self._set_fd_nonblocking()
-        self._disable_hangup_on_close()
-        self._reset_serial_buffers()
-
-    def _set_fd_nonblocking(self) -> None:
-        ser = getattr(self.port, "ser", None)
-        if ser is None:
-            return
-        try:
-            fd = ser.fileno()
-            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-        except Exception:
-            pass
-
-    def _disable_hangup_on_close(self) -> None:
-        ser = getattr(self.port, "ser", None)
-        if ser is None:
-            return
-        try:
-            attrs = termios.tcgetattr(ser.fileno())
-            attrs[2] &= ~termios.HUPCL
-            termios.tcsetattr(ser.fileno(), termios.TCSANOW, attrs)
-        except Exception:
-            pass
-
-    def _reset_serial_buffers(self) -> None:
-        ser = getattr(self.port, "ser", None)
-        if ser is None:
-            return
-        try:
-            ser.reset_output_buffer()
-            ser.reset_input_buffer()
-        except Exception:
-            pass
-
-    @staticmethod
-    def _hex_bytes(data: bytes) -> str:
-        if not data:
-            return "<none>"
-        return " ".join(f"{byte:02x}" for byte in data)
-
-    @staticmethod
-    def _raw_ping_packet(motor_id: int) -> bytes:
-        packet = [0xFF, 0xFF, motor_id, 0x02, INST_PING, 0x00]
-        packet[-1] = (~sum(packet[2:-1]) & 0xFF) & 0xFF
-        return bytes(packet)
-
-    def raw_ping(self, motor_id: int, response_window_s: float = 0.25) -> bytes:
-        ser = getattr(self.port, "ser", None)
-        if ser is None:
-            raise RuntimeError("serial port is not open")
-        packet = self._raw_ping_packet(motor_id)
-        fd = ser.fileno()
-        self._set_fd_nonblocking()
-        written = 0
-        write_deadline = time.monotonic() + response_window_s
-        while written < len(packet) and time.monotonic() < write_deadline:
-            timeout = max(0.0, write_deadline - time.monotonic())
-            _, ready, _ = select.select([], [fd], [], min(timeout, 0.02))
-            if not ready:
-                continue
-            try:
-                written += os.write(fd, packet[written:])
-            except BlockingIOError:
-                continue
-        if written != len(packet):
-            raise RuntimeError(
-                f"raw write timeout id={motor_id}: wrote {written}/{len(packet)}"
-            )
-        deadline = time.monotonic() + response_window_s
-        data = bytearray()
-        while time.monotonic() < deadline:
-            timeout = max(0.0, deadline - time.monotonic())
-            ready, _, _ = select.select([fd], [], [], min(timeout, 0.02))
-            if not ready:
-                continue
-            try:
-                chunk = os.read(fd, 256)
-            except BlockingIOError:
-                continue
-            if chunk:
-                data.extend(chunk)
-        return bytes(data)
-
-    def diagnose_open_bus(self, label: str) -> None:
-        ser = getattr(self.port, "ser", None)
-        state = ""
-        if ser is not None:
-            try:
-                state = (
-                    f" dtr={ser.dtr} rts={ser.rts} "
-                    f"in_waiting={ser.in_waiting} out_waiting={ser.out_waiting}"
-                )
-            except Exception as exc:
-                state = f" state_error={exc}"
-        print(f"[diagnose] {label}: raw ping while serial port is still open{state}", flush=True)
-        for sid in self.ids:
-            try:
-                print(f"[diagnose] id={sid} raw_ping_start", flush=True)
-                rx = self.raw_ping(sid)
-                print(f"[diagnose] id={sid} raw_rx={self._hex_bytes(rx)}", flush=True)
-            except Exception as exc:
-                print(f"[diagnose] id={sid} raw_ping_error={exc}", flush=True)
-        try:
-            print("[diagnose] sdk_read_start", flush=True)
-            print(f"[diagnose] sdk_read={self.read()}", flush=True)
-        except Exception as exc:
-            print(f"[diagnose] sdk_read_error={exc}", flush=True)
-
-    def ping(self, motor_id: int, attempts: int = SERVO_PING_ATTEMPTS) -> int:
+    def ping(self, motor_id: int, attempts: int = 3) -> int:
         last_exc: RuntimeError | None = None
         for attempt in range(1, attempts + 1):
-            try:
-                model, comm, err = self.packet.ping(motor_id)
-            except Exception:
-                self._reset_sdk_busy()
-                raise
+            model, comm, err = self.packet.ping(motor_id)
             try:
                 self._check(comm, err, f"ping servo {motor_id}")
                 return int(model)
             except RuntimeError as exc:
                 last_exc = exc
                 if attempt < attempts:
-                    self._reset_serial_buffers()
-                    time.sleep(0.12)
+                    time.sleep(0.08)
         assert last_exc is not None
         raise last_exc
 
@@ -380,11 +211,7 @@ class Gimbal:
         return {sid: self.read_one(sid) for sid in self.ids}
 
     def read_one(self, motor_id: int) -> int:
-        try:
-            pos, _speed, comm, err = self.packet.ReadPosSpeed(motor_id)
-        except Exception:
-            self._reset_sdk_busy()
-            raise
+        pos, _speed, comm, err = self.packet.ReadPosSpeed(motor_id)
         self._check(comm, err, f"read servo {motor_id}")
         pos = int(pos)
         if pos < SERVO_MIN or pos > SERVO_MAX:
@@ -392,11 +219,7 @@ class Gimbal:
         return pos
 
     def read_voltage(self, motor_id: int) -> float:
-        try:
-            voltage_raw, comm, err = self.packet.read1ByteTxRx(motor_id, PRESENT_VOLTAGE_ADDR)
-        except Exception:
-            self._reset_sdk_busy()
-            raise
+        voltage_raw, comm, err = self.packet.read1ByteTxRx(motor_id, PRESENT_VOLTAGE_ADDR)
         if comm != self.comm_success:
             raise RuntimeError(f"read voltage servo {motor_id}: {self.packet.getTxRxResult(comm)}")
         if err:
@@ -404,31 +227,19 @@ class Gimbal:
         return float(voltage_raw) / 10.0
 
     def enable_torque(self, motor_id: int) -> None:
-        try:
-            comm, err = self.packet.write1ByteTxRx(motor_id, TORQUE_ENABLE_ADDR, 1)
-        except Exception:
-            self._reset_sdk_busy()
-            raise
+        comm, err = self.packet.write1ByteTxRx(motor_id, TORQUE_ENABLE_ADDR, 1)
         self._check(comm, err, f"enable torque servo {motor_id}")
 
     def release(self) -> None:
         for sid in self.ids:
-            try:
-                comm, err = self.packet.write1ByteTxRx(sid, TORQUE_ENABLE_ADDR, 0)
-            except Exception:
-                self._reset_sdk_busy()
-                raise
+            comm, err = self.packet.write1ByteTxRx(sid, TORQUE_ENABLE_ADDR, 0)
             self._check(comm, err, f"disable torque servo {sid}")
         print("[servo] torque off")
 
     def write(self, targets: dict[int, int], wait_s: float = 0.5, verbose: bool = True) -> None:
         targets = {sid: int(np.clip(pos, SERVO_MIN, SERVO_MAX)) for sid, pos in targets.items()}
         for sid, pos in targets.items():
-            try:
-                comm, err = self.packet.WritePosEx(sid, pos, self.cfg.speed, self.cfg.acceleration)
-            except Exception:
-                self._reset_sdk_busy()
-                raise
+            comm, err = self.packet.WritePosEx(sid, pos, self.cfg.speed, self.cfg.acceleration)
             self._check(comm, err, f"write servo {sid} pos={pos}")
         if wait_s:
             time.sleep(wait_s)
@@ -730,24 +541,26 @@ def validate_axis(name: str, low: int, center: int, high: int) -> None:
 
 def cmd_center(args) -> None:
     cfg = with_overrides(args)
-    try:
-        with Gimbal(cfg) as gimbal:
-            try:
-                gimbal.center_axis(args.axis, wait_s=0.5)
-                gimbal.monitor(args.hold_s)
-            except KeyboardInterrupt:
-                print("\n[center] interrupted")
-                gimbal.diagnose_open_bus("after interrupt")
-                print(
-                    f"[center] keeping serial port open for "
-                    f"{SERIAL_INTERRUPT_EXIT_SETTLE_S:.1f}s before exit"
-                )
-                time.sleep(SERIAL_INTERRUPT_EXIT_SETTLE_S)
-                sys.stdout.flush()
-                sys.stderr.flush()
-                os._exit(130)
-    except KeyboardInterrupt:
-        print("\n[center] interrupted")
+    with Gimbal(cfg) as gimbal:
+        interrupted = False
+
+        def handle_sigint(_signum, _frame):
+            nonlocal interrupted
+            interrupted = True
+
+        old_handler = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, handle_sigint)
+        try:
+            gimbal.center_axis(args.axis, wait_s=0.5)
+            deadline = time.time() + args.hold_s
+            while time.time() < deadline and not interrupted:
+                print(f"[servo] monitor readback={gimbal.read()}")
+                time.sleep(0.2)
+        finally:
+            signal.signal(signal.SIGINT, old_handler)
+
+        if interrupted:
+            print("\n[center] interrupted")
 
 
 def cmd_test(args) -> None:
