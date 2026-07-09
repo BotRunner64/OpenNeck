@@ -87,7 +87,14 @@ class ServoBus:
                 self._reset_serial_buffers()
             self.port.closePort()
         finally:
+            self._reset_sdk_busy()
             self.opened = False
+
+    def _reset_sdk_busy(self) -> None:
+        try:
+            self.port.is_using = False
+        except Exception:
+            pass
 
     def _configure_serial(self) -> None:
         ser = getattr(self.port, "ser", None)
@@ -127,12 +134,20 @@ class ServoBus:
             raise RuntimeError(f"{action}: {self.packet.getRxPacketError(err)}")
 
     def ping(self, servo_id: int) -> int:
-        model, comm, err = self.packet.ping(servo_id)
+        try:
+            model, comm, err = self.packet.ping(servo_id)
+        except Exception:
+            self._reset_sdk_busy()
+            raise
         self.check(comm, err, f"ping servo {servo_id}")
         return int(model)
 
     def try_ping(self, servo_id: int) -> int | None:
-        model, comm, err = self.packet.ping(servo_id)
+        try:
+            model, comm, err = self.packet.ping(servo_id)
+        except Exception:
+            self._reset_sdk_busy()
+            raise
         if comm == self.comm_success and not err:
             return int(model)
         return None
@@ -145,22 +160,34 @@ class ServoBus:
         return found
 
     def read_position(self, servo_id: int) -> int:
-        if hasattr(self.packet, "ReadPosSpeed"):
-            pos, _speed, comm, err = self.packet.ReadPosSpeed(servo_id)
-        else:
-            pos, comm, err = self.packet.ReadPos(servo_id)
+        try:
+            if hasattr(self.packet, "ReadPosSpeed"):
+                pos, _speed, comm, err = self.packet.ReadPosSpeed(servo_id)
+            else:
+                pos, comm, err = self.packet.ReadPos(servo_id)
+        except Exception:
+            self._reset_sdk_busy()
+            raise
         self.check(comm, err, f"read position servo {servo_id}")
         return int(pos)
 
     def read_voltage(self, servo_id: int) -> float:
-        raw, comm, err = self.packet.read1ByteTxRx(servo_id, PRESENT_VOLTAGE_ADDR)
+        try:
+            raw, comm, err = self.packet.read1ByteTxRx(servo_id, PRESENT_VOLTAGE_ADDR)
+        except Exception:
+            self._reset_sdk_busy()
+            raise
         self.check(comm, err, f"read voltage servo {servo_id}")
         return float(raw) / 10.0
 
     def write_torque(self, servo_id: int, enabled: bool) -> None:
-        comm, err = self.packet.write1ByteTxRx(
-            servo_id, TORQUE_ENABLE_ADDR, 1 if enabled else 0
-        )
+        try:
+            comm, err = self.packet.write1ByteTxRx(
+                servo_id, TORQUE_ENABLE_ADDR, 1 if enabled else 0
+            )
+        except Exception:
+            self._reset_sdk_busy()
+            raise
         self.check(comm, err, f"{'enable' if enabled else 'disable'} torque servo {servo_id}")
 
     def move_position(
@@ -170,21 +197,37 @@ class ServoBus:
         speed: int = 1000,
         acceleration: int = 50,
     ) -> None:
-        comm, err = self.packet.WritePosEx(servo_id, position, speed, acceleration)
+        try:
+            comm, err = self.packet.WritePosEx(servo_id, position, speed, acceleration)
+        except Exception:
+            self._reset_sdk_busy()
+            raise
         self.check(comm, err, f"move servo {servo_id} to {position}")
 
     def unlock_eprom(self, servo_id: int) -> None:
-        comm, err = self.packet.unLockEprom(servo_id)
+        try:
+            comm, err = self.packet.unLockEprom(servo_id)
+        except Exception:
+            self._reset_sdk_busy()
+            raise
         self.check(comm, err, f"unlock EEPROM servo {servo_id}")
 
     def lock_eprom(self, servo_id: int) -> None:
-        comm, err = self.packet.LockEprom(servo_id)
+        try:
+            comm, err = self.packet.LockEprom(servo_id)
+        except Exception:
+            self._reset_sdk_busy()
+            raise
         self.check(comm, err, f"lock EEPROM servo {servo_id}")
 
     def write_servo_id(self, old_id: int, new_id: int) -> None:
         self.unlock_eprom(old_id)
         try:
-            comm, err = self.packet.write1ByteTxRx(old_id, ID_ADDR, new_id)
+            try:
+                comm, err = self.packet.write1ByteTxRx(old_id, ID_ADDR, new_id)
+            except Exception:
+                self._reset_sdk_busy()
+                raise
             self.check(comm, err, f"write servo ID {old_id}->{new_id}")
         except Exception:
             # If the write failed, the old ID should still be valid.
@@ -194,9 +237,13 @@ class ServoBus:
     def calibrate_middle(self, servo_id: int) -> None:
         self.unlock_eprom(servo_id)
         try:
-            comm, err = self.packet.write1ByteTxRx(
-                servo_id, TORQUE_ENABLE_ADDR, CALIBRATE_MIDDLE_CMD
-            )
+            try:
+                comm, err = self.packet.write1ByteTxRx(
+                    servo_id, TORQUE_ENABLE_ADDR, CALIBRATE_MIDDLE_CMD
+                )
+            except Exception:
+                self._reset_sdk_busy()
+                raise
             self.check(comm, err, f"calibrate middle servo {servo_id}")
         finally:
             self.lock_eprom(servo_id)

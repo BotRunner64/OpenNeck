@@ -230,8 +230,15 @@ class Gimbal:
                 self._reset_serial_buffers()
             self.port.closePort()
         finally:
+            self._reset_sdk_busy()
             self.opened = False
             self.connected = False
+
+    def _reset_sdk_busy(self) -> None:
+        try:
+            self.port.is_using = False
+        except Exception:
+            pass
 
     def _configure_serial(self) -> None:
         ser = getattr(self.port, "ser", None)
@@ -353,7 +360,11 @@ class Gimbal:
     def ping(self, motor_id: int, attempts: int = SERVO_PING_ATTEMPTS) -> int:
         last_exc: RuntimeError | None = None
         for attempt in range(1, attempts + 1):
-            model, comm, err = self.packet.ping(motor_id)
+            try:
+                model, comm, err = self.packet.ping(motor_id)
+            except Exception:
+                self._reset_sdk_busy()
+                raise
             try:
                 self._check(comm, err, f"ping servo {motor_id}")
                 return int(model)
@@ -369,7 +380,11 @@ class Gimbal:
         return {sid: self.read_one(sid) for sid in self.ids}
 
     def read_one(self, motor_id: int) -> int:
-        pos, _speed, comm, err = self.packet.ReadPosSpeed(motor_id)
+        try:
+            pos, _speed, comm, err = self.packet.ReadPosSpeed(motor_id)
+        except Exception:
+            self._reset_sdk_busy()
+            raise
         self._check(comm, err, f"read servo {motor_id}")
         pos = int(pos)
         if pos < SERVO_MIN or pos > SERVO_MAX:
@@ -377,7 +392,11 @@ class Gimbal:
         return pos
 
     def read_voltage(self, motor_id: int) -> float:
-        voltage_raw, comm, err = self.packet.read1ByteTxRx(motor_id, PRESENT_VOLTAGE_ADDR)
+        try:
+            voltage_raw, comm, err = self.packet.read1ByteTxRx(motor_id, PRESENT_VOLTAGE_ADDR)
+        except Exception:
+            self._reset_sdk_busy()
+            raise
         if comm != self.comm_success:
             raise RuntimeError(f"read voltage servo {motor_id}: {self.packet.getTxRxResult(comm)}")
         if err:
@@ -385,19 +404,31 @@ class Gimbal:
         return float(voltage_raw) / 10.0
 
     def enable_torque(self, motor_id: int) -> None:
-        comm, err = self.packet.write1ByteTxRx(motor_id, TORQUE_ENABLE_ADDR, 1)
+        try:
+            comm, err = self.packet.write1ByteTxRx(motor_id, TORQUE_ENABLE_ADDR, 1)
+        except Exception:
+            self._reset_sdk_busy()
+            raise
         self._check(comm, err, f"enable torque servo {motor_id}")
 
     def release(self) -> None:
         for sid in self.ids:
-            comm, err = self.packet.write1ByteTxRx(sid, TORQUE_ENABLE_ADDR, 0)
+            try:
+                comm, err = self.packet.write1ByteTxRx(sid, TORQUE_ENABLE_ADDR, 0)
+            except Exception:
+                self._reset_sdk_busy()
+                raise
             self._check(comm, err, f"disable torque servo {sid}")
         print("[servo] torque off")
 
     def write(self, targets: dict[int, int], wait_s: float = 0.5, verbose: bool = True) -> None:
         targets = {sid: int(np.clip(pos, SERVO_MIN, SERVO_MAX)) for sid, pos in targets.items()}
         for sid, pos in targets.items():
-            comm, err = self.packet.WritePosEx(sid, pos, self.cfg.speed, self.cfg.acceleration)
+            try:
+                comm, err = self.packet.WritePosEx(sid, pos, self.cfg.speed, self.cfg.acceleration)
+            except Exception:
+                self._reset_sdk_busy()
+                raise
             self._check(comm, err, f"write servo {sid} pos={pos}")
         if wait_s:
             time.sleep(wait_s)
